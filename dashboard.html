@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Estação do Clima Web</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <style>
+        body {
+            background-color: #f4f6f9;
+        }
+        .card-metric {
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .card-metric:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 .5rem 1rem rgba(0,0,0,.15)!important;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm mb-4">
+        <div class="container">
+            <a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="#">
+                <i class="bi bi-cpu-fill fs-4"></i> Estação do Clima Web
+            </a>
+            <div class="d-flex align-items-center gap-3">
+                <span id="userInfo" class="text-white fw-medium">
+                    <i class="bi bi-person-circle"></i> <span id="userEmail">Carregando...</span>
+                </span>
+                <button class="btn btn-outline-light btn-sm" id="btnLogout">
+                    <i class="bi bi-box-arrow-right"></i> Sair
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container pb-5">
+        
+        <!-- Global Feedback Alert -->
+        <div id="dashAlert" class="alert d-none shadow-sm" role="alert"></div>
+
+        <!-- Link New Station Form -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body p-4">
+                <h5 class="card-title text-primary fw-bold mb-3 d-flex align-items-center gap-2">
+                    <i class="bi bi-plus-circle-fill"></i> Vincular Nova Estação 
+                </h5>
+                <form id="linkStationForm" class="row g-3 align-items-end">
+                    <div class="col-md-9">
+                        <label for="stationIdInput" class="form-label text-secondary fw-semibold">ID da Estação</label>
+                        <input type="text" class="form-control" id="stationIdInput" required>
+                    </div>
+                    <div class="col-md-3">
+                        <button type="submit" id="btnLink" class="btn btn-success w-100 py-2">
+                            <span id="btnLinkText"><i class="bi bi-link-45deg"></i> Vincular Estação</span>
+                            <span id="btnLinkSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Stations List Header -->
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="text-secondary fw-bold m-0 d-flex align-items-center gap-2">
+                <i class="bi bi-speedometer2"></i> Minhas Estações Vinculadas
+            </h4>
+            <button id="btnRefresh" class="btn btn-outline-primary btn-sm d-flex align-items-center gap-1">
+                <i class="bi bi-arrow-clockwise"></i> Atualizar Leituras
+            </button>
+        </div>
+
+        <!-- Stations Grid Container -->
+        <div class="row g-4" id="stationsGrid">
+            <div class="col-12 text-center text-muted py-5" id="loadingState">
+                <div class="spinner-border text-primary mb-2" role="status"></div>
+                <p class="m-0">Buscando suas estações no Firestore...</p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase Script Module -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+        import { 
+            getFirestore, 
+            collection, 
+            query, 
+            where, 
+            getDocs, 
+            addDoc,
+            deleteDoc,
+            doc
+        } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyDq2L321nt_mA20C5jsQTarXU_VhFqJwhY",
+            authDomain: "estacao-esp32-d1567.firebaseapp.com",
+            projectId: "estacao-esp32-d1567",
+            storageBucket: "estacao-esp32-d1567.firebasestorage.app",
+            messagingSenderId: "1005042474762",
+            appId: "1:1005042474762:web:025780d7e6336324df24f3",
+            measurementId: "G-SL6B0LB6HB"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // 1. Session Check
+        const rawLoggedUser = localStorage.getItem('usuarioLogado');
+        if (!rawLoggedUser) {
+            window.location.href = "index.html";
+        }
+        
+        const user = JSON.parse(rawLoggedUser);
+        document.getElementById('userEmail').innerText = user.email || 'Usuário';
+
+        // DOM Elements
+        const dashAlert = document.getElementById('dashAlert');
+        const stationsGrid = document.getElementById('stationsGrid');
+        const linkStationForm = document.getElementById('linkStationForm');
+        const btnLogout = document.getElementById('btnLogout');
+        const btnRefresh = document.getElementById('btnRefresh');
+
+        // Helper function to display alert messages
+        function showAlert(message, type) {
+            dashAlert.innerText = message;
+            dashAlert.className = `alert alert-${type} shadow-sm`;
+            dashAlert.classList.remove('d-none');
+            setTimeout(() => dashAlert.classList.add('d-none'), 5000);
+        }
+
+        // Helper function to format timestamp/date values
+        function formatDate(dateValue) {
+            if (!dateValue) return 'Data não informada';
+            
+            if (typeof dateValue === 'object' && dateValue.seconds) {
+                return new Date(dateValue.seconds * 1000).toLocaleString('pt-BR');
+            }
+            
+            const parsedDate = new Date(dateValue);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toLocaleString('pt-BR');
+            }
+
+            return String(dateValue);
+        }
+
+        // Logout Event Listener
+        btnLogout.addEventListener('click', () => {
+            localStorage.removeItem('usuarioLogado');
+            window.location.href = "index.html";
+        });
+
+        // Helper function to check if station exists in Firestore
+        async function checkIfStationExists(stationId) {
+            try {
+                // Check in 'registers' collection using station_id
+                const registerQuery1 = query(
+                    collection(db, "registers"),
+                    where("station_id", "==", String(stationId))
+                );
+                const snapshot1 = await getDocs(registerQuery1);
+                if (!snapshot1.empty) return true;
+
+                // Fallback check in 'registers' using legacy estation_id field
+                const registerQuery2 = query(
+                    collection(db, "registers"),
+                    where("estation_id", "==", String(stationId))
+                );
+                const snapshot2 = await getDocs(registerQuery2);
+                if (!snapshot2.empty) return true;
+
+                // Check in 'stations' collection (if present)
+                const stationQuery = query(
+                    collection(db, "stations"),
+                    where("station_id", "==", String(stationId))
+                );
+                const snapshot3 = await getDocs(stationQuery);
+                if (!snapshot3.empty) return true;
+
+                return false;
+            } catch (error) {
+                console.error("Error verifying station existence:", error);
+                return false;
+            }
+        }
+
+        // 2. Link a station by station_id
+        linkStationForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const stationIdValue = document.getElementById('stationIdInput').value.trim();
+            const btnLink = document.getElementById('btnLink');
+            const btnLinkText = document.getElementById('btnLinkText');
+            const btnLinkSpinner = document.getElementById('btnLinkSpinner');
+
+            btnLink.disabled = true;
+            btnLinkText.innerText = "Verificando...";
+            btnLinkSpinner.classList.remove('d-none');
+
+            try {
+                // Verify if station exists
+                const stationExists = await checkIfStationExists(stationIdValue);
+                if (!stationExists) {
+                    showAlert(`Não existe nenhuma estação cadastrada com o ID '${stationIdValue}'.`, "danger");
+                    return;
+                }
+
+                // Check if station is already linked to user
+                const checkQuery = query(
+                    collection(db, "users_registers"),
+                    where("user_id", "==", user.id),
+                    where("station_id", "==", stationIdValue)
+                );
+                const checkSnapshot = await getDocs(checkQuery);
+
+                if (!checkSnapshot.empty) {
+                    showAlert("Esta estação já está vinculada à sua conta.", "warning");
+                    return;
+                }
+
+                // Save link in users_registers collection
+                await addDoc(collection(db, "users_registers"), {
+                    user_id: user.id,
+                    station_id: stationIdValue
+                });
+
+                showAlert(`Estação '${stationIdValue}' vinculada com sucesso!`, "success");
+                linkStationForm.reset();
+                fetchUserStations();
+
+            } catch (error) {
+                console.error("Error linking station:", error);
+                showAlert("Erro ao vincular: " + error.message, "danger");
+            } finally {
+                btnLink.disabled = false;
+                btnLinkText.innerHTML = '<i class="bi bi-link-45deg"></i> Vincular Estação';
+                btnLinkSpinner.classList.add('d-none');
+            }
+        });
+
+        // Function to unlink station
+        window.unlinkStation = async function(linkDocId, stationId) {
+            if (!confirm(`Tem certeza de que deseja desvincular a estação '${stationId}'?`)) {
+                return;
+            }
+
+            try {
+                await deleteDoc(doc(db, "users_registers", linkDocId));
+                showAlert(`Estação '${stationId}' desvinculada com sucesso.`, "info");
+                fetchUserStations();
+            } catch (error) {
+                console.error("Error unlinking station:", error);
+                showAlert("Erro ao desvincular estação: " + error.message, "danger");
+            }
+        };
+
+        // 3. Fetch the latest reading from 'registers' collection using station_id
+        async function fetchLatestReading(stationId) {
+            try {
+                // Primary query using station_id
+                const primaryQuery = query(
+                    collection(db, "registers"), 
+                    where("station_id", "==", String(stationId))
+                );
+                const primarySnapshot = await getDocs(primaryQuery);
+
+                let records = [];
+                primarySnapshot.forEach(doc => records.push(doc.data()));
+
+                // Fallback query for legacy estation_id field
+                if (records.length === 0) {
+                    const fallbackQuery = query(
+                        collection(db, "registers"), 
+                        where("estation_id", "==", String(stationId))
+                    );
+                    const fallbackSnapshot = await getDocs(fallbackQuery);
+                    fallbackSnapshot.forEach(doc => records.push(doc.data()));
+                }
+
+                if (records.length === 0) return null;
+
+                // Sort records in memory to locate the most recent entry
+                let latestRecord = records[0];
+                let maxTimestamp = 0;
+
+                records.forEach(data => {
+                    let timestamp = 0;
+                    if (data.date_register && data.date_register.seconds) {
+                        timestamp = data.date_register.seconds;
+                    } else if (data.date_register) {
+                        timestamp = new Date(data.date_register).getTime();
+                    }
+
+                    if (timestamp >= maxTimestamp) {
+                        maxTimestamp = timestamp;
+                        latestRecord = data;
+                    }
+                });
+
+                return latestRecord;
+
+            } catch (error) {
+                console.error("Error fetching readings for Station ID:", stationId, error);
+                return null;
+            }
+        }
+
+        // 4. Fetch and display all stations linked to the logged-in user
+        async function fetchUserStations() {
+            dashAlert.classList.add('d-none');
+            stationsGrid.innerHTML = `
+                <div class="col-12 text-center text-muted py-5">
+                    <div class="spinner-border text-primary mb-2" role="status"></div>
+                    <p class="m-0">Carregando dados das suas estações...</p>
+                </div>`;
+
+            try {
+                const userLinksQuery = query(
+                    collection(db, "users_registers"),
+                    where("user_id", "==", user.id)
+                );
+                const userLinksSnapshot = await getDocs(userLinksQuery);
+
+                if (userLinksSnapshot.empty) {
+                    stationsGrid.innerHTML = `
+                        <div class="col-12 text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 d-block mb-2 text-secondary"></i>
+                            <p class="fs-5 fw-semibold mb-1">Nenhuma estação vinculada</p>
+                            <p class="small text-muted">Digite o ID da sua estação no campo acima.</p>
+                        </div>`;
+                    return;
+                }
+
+                stationsGrid.innerHTML = "";
+
+                for (const userLinkDoc of userLinksSnapshot.docs) {
+                    const linkDocId = userLinkDoc.id;
+                    const linkData = userLinkDoc.data();
+                    const stationId = linkData.station_id || linkData.estation_id;
+
+                    const latestReading = await fetchLatestReading(stationId);
+
+                    const ppm = (latestReading && latestReading.ppm !== undefined) ? latestReading.ppm : '--';
+                    const humidity = (latestReading && latestReading.umidade_relativa !== undefined) ? latestReading.umidade_relativa : '--';
+                    const formattedDate = latestReading ? formatDate(latestReading.date_register) : 'Sem medições cadastradas';
+
+                    const cardHtml = `
+                        <div class="col-md-6 col-lg-4">
+                            <div class="card h-100 border-0 shadow-sm card-metric border-top border-primary border-4 rounded-3">
+                                <div class="card-body p-4 d-flex flex-column justify-content-between">
+                                    <div>
+                                        <div class="d-flex justify-content-between align-items-center mb-3">
+                                            <span class="badge bg-primary-subtle text-primary fw-bold px-3 py-2 rounded-pill">
+                                                <i class="bi bi-broadcast"></i> Estação
+                                            </span>
+                                            <span class="fw-bold text-dark fs-5">${stationId}</span>
+                                        </div>
+
+                                        <hr class="text-muted opacity-25">
+
+                                        <div class="row text-center my-3">
+                                            <div class="col-6 border-end">
+                                                <span class="d-block text-muted small fw-semibold">PPM</span>
+                                                <span class="fs-3 fw-bold text-dark">${ppm}</span>
+                                            </div>
+                                            <div class="col-6">
+                                                <span class="d-block text-muted small fw-semibold">Umidade Relativa</span>
+                                                <span class="fs-3 fw-bold text-info">${humidity}${humidity !== '--' ? '%' : ''}</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="bg-light p-2 rounded text-center my-3">
+                                            <small class="text-muted d-block">
+                                                <i class="bi bi-clock"></i> <strong>Último Registro:</strong> ${formattedDate}
+                                            </small>
+                                        </div>
+                                    </div>
+
+                                    <button onclick="unlinkStation('${linkDocId}', '${stationId}')" class="btn btn-outline-danger btn-sm w-100 mt-2">
+                                        <i class="bi bi-link-45deg"></i> Desvincular Estação
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    stationsGrid.innerHTML += cardHtml;
+                }
+
+            } catch (error) {
+                console.error("Error fetching user stations:", error);
+                showAlert("Erro ao carregar vínculos do usuário: " + error.message, "danger");
+            }
+        }
+
+        btnRefresh.addEventListener('click', fetchUserStations);
+        fetchUserStations();
+    </script>
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
